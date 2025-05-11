@@ -9,6 +9,8 @@ from models.multimodal_pcqa import MM_PCQAnet
 import cv2
 from PIL import Image
 import open3d as o3d
+from pathlib import Path
+import json
 
 def pc_normalize(pc):
     l = pc.shape[0]
@@ -79,6 +81,12 @@ def background_crop(img):
         #print(gray_img.shape)
     col = np.mean(gray_img,axis=0)
     row = np.mean(gray_img,axis=1)
+
+    row_a, row_b = 0, img.shape[0]
+    col_a, col_b = 0, img.shape[1]
+    assert row_b == len(row)
+    assert col_b == len(col)
+
     for i in range(len(col)):
         if col[i] != 255:
             col_a = i
@@ -127,6 +135,12 @@ def ply2projections(objname):
         img = background_crop(img)
         imgs.append(img)
 
+        test_images = "/home/victor/thesis/pcqa/pcqas/MM-PCQA/test_images"
+        Path(test_images).mkdir(parents=True, exist_ok=True)
+        base_name = Path(objname).stem
+        img_file = Image.fromarray(img)
+        img_file.save(Path(test_images) / f"{base_name}_view_{i}.png")
+
     end = time.time()
     # print("time consuming: ",end-start)
     vis.destroy_window()
@@ -134,58 +148,74 @@ def ply2projections(objname):
     del vis
     return imgs
 
-    
-    
 
+def append_to_dict(pc_dir, output_path, file_name, score_dict):
+    if Path(output_path).exists():
+        with open(output_path, "r") as f:
+            d = json.load(f)
+    else:
+        d = {}
+    d[pc_dir] = score_dict
+    with open(output_path, "w") as f:
+        json.dump(d, f, indent=4)
+
+def extend_dict(path, new_dict):
+    if Path(path).exists():
+        with open(path, "r") as f:
+            d = json.load(f)
+    else:
+        d = {}
+    d.update(new_dict)
+    with open(path, "w") as f:
+        json.dump(d, f, indent=4)
+    
 def main(config):
-    #get the projections and patches
-    imgs = ply2projections(config.objname)
-    print('Projections generated.')
-    patches = knn_patch(config.objname)
-    print('Patches generated.')
-
-    transformations_test = transforms.Compose([transforms.CenterCrop(224),transforms.ToTensor(),\
-                transforms.Normalize(mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225])])
-    #transformed_imgs = [img_num,color channel,crop_size,crop_size]
-    transformed_imgs = torch.zeros([4, 3, 224, 224])
-    # transform the used 4 projections
-    for i in range(4):
-        # load images
-        read_frame = Image.fromarray(imgs[i])
-        read_frame = read_frame.convert('RGB')
-        read_frame = transformations_test(read_frame)
-        transformed_imgs[i] = read_frame
-    # get the used 6 patches [patch_num,(x,y,x),patchsize]
-    transformed_patches = torch.zeros([6, 3, 2048])
-    for i in range(6):
-        transformed_patches[i] = torch.from_numpy(patches[i]).transpose(0,1)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-
-
+    ply_files = sorted([str(file) for file in Path(config.pc_dir).rglob("*") if file.is_file() and file.suffix == ".ply"])
+    print(f"ply_files: {ply_files}")
     # # load ckpt
     model = MM_PCQAnet()
     print('Using model: MM-PCQA')
     model.load_state_dict(torch.load(config.ckpt_path))
     print('Load the trained weights.')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-    
-
-
-    # Begin Test 
-    
+    score_dict = {}
+    # Begin Test
     model.eval()
+    for ply_file in ply_files:
+        #try:
+        imgs = ply2projections(ply_file)
+        print('Projections generated.')
+        patches = knn_patch(ply_file)
+        print('Patches generated.')
+        transformations_test = transforms.Compose([transforms.CenterCrop(224),transforms.ToTensor(),\
+                    transforms.Normalize(mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225])])
+        #transformed_imgs = [img_num,color channel,crop_size,crop_size]
+        transformed_imgs = torch.zeros([4, 3, 224, 224])
+        # transform the used 4 projections
+        for i in range(4):
+            # load images
+            read_frame = Image.fromarray(imgs[i])
+            read_frame = read_frame.convert('RGB')
+            read_frame = transformations_test(read_frame)
+            transformed_imgs[i] = read_frame
+        # get the used 6 patches [patch_num,(x,y,x),patchsize]
+        transformed_patches = torch.zeros([6, 3, 2048])
+        for i in range(6):
+            transformed_patches[i] = torch.from_numpy(patches[i]).transpose(0,1)
 
-    print('Begin inference.')
-    with torch.no_grad():
-        transformed_imgs = transformed_imgs.to(device).unsqueeze(0)
-        transformed_patches = torch.Tensor(transformed_patches.float()).unsqueeze(0)
-        transformed_patches = transformed_patches.to(device)
-        outputs = model(transformed_imgs,transformed_patches)
-        score = outputs.item()
+        print('Begin inference.')
+        with torch.no_grad():
+            transformed_imgs = transformed_imgs.to(device).unsqueeze(0)
+            transformed_patches = torch.Tensor(transformed_patches.float()).unsqueeze(0)
+            transformed_patches = transformed_patches.to(device)
+            outputs = model(transformed_imgs,transformed_patches)
+            score = outputs.item()
+        #except:
+            #score = -1
+        score_dict[ply_file] = score
     
-    print('Predicted quality score: ' + str(score))
+    append_to_dict(config.pc_dir, config.output_path, ply_file, score_dict)
 
 if __name__ == '__main__':
 
@@ -193,9 +223,9 @@ if __name__ == '__main__':
 
     # input parameters
 
-    parser.add_argument('--objname', type=str, default='/bag/bag_level_7.ply') # path to the test ply
+    parser.add_argument('--pc_dir', type=str, required=True) # path to the test ply
     parser.add_argument('--ckpt_path', type=str, default='WPC.pth') # path to the pretrained weights
-
+    parser.add_argument('--output_path', type=str, required=True)
 
     config = parser.parse_args()
 
