@@ -1,0 +1,5 @@
+test_single_ply.sh
+pths/
+*__pycache__*
+test_images/
+test.json

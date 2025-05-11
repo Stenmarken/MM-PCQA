@@ -135,12 +135,6 @@ def ply2projections(objname):
         img = background_crop(img)
         imgs.append(img)
 
-        test_images = "/home/victor/thesis/pcqa/pcqas/MM-PCQA/test_images"
-        Path(test_images).mkdir(parents=True, exist_ok=True)
-        base_name = Path(objname).stem
-        img_file = Image.fromarray(img)
-        img_file.save(Path(test_images) / f"{base_name}_view_{i}.png")
-
     end = time.time()
     # print("time consuming: ",end-start)
     vis.destroy_window()
